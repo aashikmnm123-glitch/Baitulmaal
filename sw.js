@@ -14,7 +14,7 @@
  *
  * BUMP CACHE_VERSION on every deploy.
  */
-const V = "bm-v8-109";
+const V = "bm-v8-110";
 
 const SHELL = [
   "./", "./index.html", "./manifest.webmanifest",

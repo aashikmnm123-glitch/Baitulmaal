@@ -2162,12 +2162,19 @@ function featRaw(k){
 }
 function featOn(k){ return isOwner() || featRaw(k); }
 // Can the CURRENT user use print/export/share? Staff always; members need feat_export ON.
-function canExport(){
-  // Owner & treasurer always. Committee members (those holding a committee
-  // title) can print/share. Regular members cannot.
-  if(isStaff()) return true;
-  return !!(S.me && S.me.committee_title);
+// THREE tiers of access:
+//  • Owner  → everything: Excel export/import, all prints, all shares, edit.
+//  • Committee (owner, treasurer, or anyone holding a committee title)
+//            → print/share PDF, WhatsApp, copy. NOT Excel export/import.
+//  • Regular members (no title) → view only, nothing to export/print/share.
+function isCommittee(){
+  if(isStaff()) return true;                       // owner + treasurer
+  return !!(S.me && S.me.committee_title);          // committee title holders
 }
+function canPrintShare(){ return isCommittee(); }   // PDF / WhatsApp / copy
+function canExcel(){ return isOwner(); }            // Excel/CSV export + import — OWNER ONLY
+// Back-compat: old name now means "can print/share at all"
+function canExport(){ return canPrintShare(); }
 function showBotNav(on){
   const n=$("botnav"); if(!n) return;
   n.classList.toggle("nav-hidden", !on);
@@ -2290,10 +2297,13 @@ function rowsToCSV(header, rows){
 }
 // A small share/export button bar for any popup. `key` identifies what to build.
 function shareBar(kind, id){
+  if(!canPrintShare()) return "";                   // members: nothing
+  const excelBtn = canExcel()
+    ? `<button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','csv')">&#128202; Excel/CSV</button>` : "";
   return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
     <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','whatsapp')">&#128241; WhatsApp / Share</button>
     <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','copy')">&#128203; Copy text</button>
-    <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','csv')">&#128202; Excel/CSV</button>
+    ${excelBtn}
     <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','pdf')">&#128196; PDF</button>
   </div>`;
 }
@@ -2337,14 +2347,15 @@ async function exportThing(kind, id, how){
 
   if(how==="whatsapp"){ await shareText(text, title); return; }
   if(how==="copy"){ await copyText(text); return; }
-  if(how==="csv"){ downloadFile(title.replace(/[^a-z0-9]+/gi,"_")+".csv", rowsToCSV(header,rows), "text/csv"); return; }
+  if(how==="csv"){ if(!canExcel()){ toast("Excel export is available to the owner only.", true); return; } downloadFile(title.replace(/[^a-z0-9]+/gi,"_")+".csv", rowsToCSV(header,rows), "text/csv"); return; }
   if(how==="pdf"){
     const th=header.map(h=>`<th style="text-align:left;background:#f4f7f5;padding:6px 8px">${h}</th>`).join("");
     const tr=rows.map(r=>"<tr>"+r.map(c=>`<td style="padding:6px 8px;border-bottom:1px solid #eee">${c}</td>`).join("")+"</tr>").join("");
     const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
       <style>body{font-family:-apple-system,sans-serif;padding:20px;color:#1a2420}h1{color:#0e5a44;font-size:20px}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
       .noprint{position:fixed;top:0;left:0;right:0;background:#1d7a5c;color:#fff;padding:10px;text-align:center}.noprint button{background:#fff;color:#1d7a5c;border:0;padding:6px 14px;border-radius:8px;font-weight:700}@media print{.noprint{display:none}body{padding:0}}</style></head>
-      <body><div class="noprint">Save as PDF → <button onclick="window.print()">Print / Save PDF</button></div>
+      <body><div class="noprint">Save as PDF → <button onclick="window.print()">Print / Save PDF</button>
+      <button onclick="window.close()" style="background:rgba(255,255,255,.25);color:#fff;margin-left:8px">Cancel / Close</button></div>
       <div style="padding-top:50px"><h1>${title}</h1><div style="color:#666;font-size:12px">${fund} · ${new Date().toLocaleString("en-GB")}</div>
       <table><tr>${th}</tr>${tr}</table></div></body></html>`;
     const w=window.open("","_blank"); if(!w){ toast("Allow pop-ups to open the PDF.", true); return; }
@@ -2377,12 +2388,13 @@ async function chartToImage(){
     // Attach offscreen so Chart.js actually paints before we capture it.
     cv.style.cssText="position:fixed;left:-9999px;top:0;width:760px;height:380px";
     document.body.appendChild(cv);
+    const useBars = labels.length < 3;  // one/two months: bars are readable; more: lines
     const ch=new Chart(cv.getContext("2d"),{
-      type:"line",
+      type: useBars ? "bar" : "line",
       data:{ labels, datasets:[
-        {label:"Money In (deposits)", data:labels.map(k=>inM[k]||0), borderColor:"#1d7a5c", backgroundColor:"rgba(29,122,92,.12)", fill:true, tension:.3},
-        {label:"Money Out (payouts)", data:labels.map(k=>outM[k]||0), borderColor:"#c0392b", backgroundColor:"rgba(192,57,43,.10)", fill:true, tension:.3},
-        {label:"Well-wisher Gifts", data:labels.map(k=>wwM[k]||0), borderColor:"#b8860b", backgroundColor:"rgba(184,134,11,.10)", fill:true, tension:.3},
+        {label:"Money In (deposits)", data:labels.map(k=>inM[k]||0), borderColor:"#1d7a5c", backgroundColor: useBars?"#1d7a5c":"rgba(29,122,92,.12)", fill:!useBars, tension:.3, pointRadius:5, pointBackgroundColor:"#1d7a5c"},
+        {label:"Money Out (payouts)", data:labels.map(k=>outM[k]||0), borderColor:"#c0392b", backgroundColor: useBars?"#c0392b":"rgba(192,57,43,.10)", fill:!useBars, tension:.3, pointRadius:5, pointBackgroundColor:"#c0392b"},
+        {label:"Well-wisher Gifts", data:labels.map(k=>wwM[k]||0), borderColor:"#b8860b", backgroundColor: useBars?"#b8860b":"rgba(184,134,11,.10)", fill:!useBars, tension:.3, pointRadius:5, pointBackgroundColor:"#b8860b"},
       ]},
       options:{ responsive:false, animation:false,
         plugins:{ legend:{position:"bottom"}, title:{display:true,text:"Fund Activity Over Time (LKR)"} },
@@ -2455,7 +2467,8 @@ async function buildReport(audience){
     .rep-body{margin-top:0}
   </style></head><body>
   <div class="noprint">To save as PDF: tap Share → Print → then Share the PDF.
-    <button onclick="window.print()">Print / Save PDF</button></div>
+    <button onclick="window.print()">Print / Save PDF</button>
+    <button onclick="window.close()" style="background:rgba(255,255,255,.25);color:#fff">Cancel / Close</button></div>
   <div class="rep-body" style="padding-top:56px">
     <h1>${fund}</h1>
     <div class="sub">Financial Report &nbsp;·&nbsp; ${per.label} &nbsp;·&nbsp; Generated ${now}${audience==="member"?" · Member Summary":" · Committee — Full Detail"}</div>
@@ -2515,6 +2528,7 @@ function _dl(name,text){
   a.download=name; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),4000);
 }
 function exportCSV(kind){
+  if(!canExcel()){ toast("Excel export is available to the owner only.", true); return; }
   const D=(S.deposits||[]).map(d=>["Deposit",d.name,_fiDate(d).toISOString().slice(0,10),d.amount,d.side||"",d.ref_no||"",d.status]);
   const P=(S.requests||[]).filter(r=>r.disbursed).map(r=>["Payout",r.name,_fiDate(r).toISOString().slice(0,10),(r.approved_amount??r.amount),r.category||"",r.intent||"",""]);
   const R=(S.repayments||[]).map(x=>{
@@ -4421,7 +4435,7 @@ async function refreshMember(){
   renderMemberHealth(); renderMyTables(); drawMemberCharts(); renderDepNotice(); loadRoster();
   loadLimits(); loadDonations(); renderMyActivity(); renderMyRejected(); fillMemberPicker(); toggleProxyKind();
   if($("mp-date") && !$("mp-date").value) $("mp-date").value=todayISO();
-  $("m-stamp").textContent = "Version 9.09 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
+  $("m-stamp").textContent = "Version 9.10 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
 }
 
 // Members can't read other people's rows, so the fund total can't be summed
@@ -6702,7 +6716,7 @@ async function openMemberInfo(uid){
     ${row("Joined", fmtD(pr.created_at))}
     ${row("Last active", fmtDT(act&&(act.last_login||act.last_seen)))}
     ${row("Times opened", act&&act.login_count!=null?String(act.login_count):null)}
-    ${(staff&&(pr.bank_account||pr.bank_name))?`<button class="btn btn-line btn-block sp" onclick="copyMemberBank('${pr.id}')">&#128203; Copy bank details</button>`:""}${(staff&&canExport())?shareBar("member",pr.id):""}`);
+    ${(staff&&(pr.bank_account||pr.bank_name))?`<button class="btn btn-line btn-block sp" onclick="copyMemberBank('${pr.id}')">&#128203; Copy bank details</button>`:""}${canPrintShare()?shareBar("member",pr.id):""}`);
 }
 async function loadActivity(){
   if(!isOwner()) return;
