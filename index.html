@@ -1721,6 +1721,8 @@ body.previewing.has-botnav #help-fab{bottom:calc(150px + env(safe-area-inset-bot
         <h2 style="font-size:18px;margin:0">Member register</h2>
         <div style="display:flex;gap:8px">
           <button class="btn btn-line btn-sm" onclick="exportMemberRegister()" title="Export member register to Excel">&#11014;&#65039; Export</button>
+          <button class="btn btn-line btn-sm" onclick="exportThing('memberlist','','whatsapp')" title="Share members to WhatsApp">&#128241; Share</button>
+          <button class="btn btn-line btn-sm" onclick="exportThing('memberlist','','pdf')" title="Print members as PDF">&#128196; PDF</button>
           <label class="btn btn-line btn-sm" style="cursor:pointer" title="Import / update members from Excel">
             &#11015;&#65039; Import
             <input type="file" id="bulk-file" accept=".xlsx,.csv" style="display:none">
@@ -2249,6 +2251,99 @@ function applyGlobalFeatureGates(){
 function _fiDate(x){ return new Date(x.date||x.created_at||x.approved_at||Date.now()); }
 function _fiOk(d){ return d.status==="verified"; }
 function _fiDon(d){ return d.status!=="pending" && d.status!=="rejected"; }
+// ═══ UNIVERSAL SHARE / EXPORT HELPERS ═══
+// Share plain text via the phone's share sheet (WhatsApp, copy, etc.)
+async function shareText(text, title){
+  try{
+    if(navigator.share){ await navigator.share({title:title||"Baitul Maal", text}); return; }
+  }catch(_){ return; }
+  try{ await navigator.clipboard.writeText(text); toast("Copied — paste into WhatsApp or anywhere."); }
+  catch(_){ toast("Long-press to copy.", true); }
+}
+// Copy plain text to clipboard
+async function copyText(text){
+  try{ await navigator.clipboard.writeText(text); toast("Copied to clipboard."); haptic("light"); }
+  catch(_){ toast("Long-press the text to copy.", true); }
+}
+// Download a file (CSV/Excel) — opens the iOS share/save sheet
+function downloadFile(filename, content, mime){
+  try{
+    const blob=new Blob([content], {type:mime||"text/plain"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a"); a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click();
+    setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 500);
+    toast("Saved — check your Files / Downloads.");
+  }catch(_){ toast("Could not save the file.", true); }
+}
+// Build CSV text from a header row + array of rows
+function rowsToCSV(header, rows){
+  const esc=(v)=>'"'+String(v==null?"":v).replace(/"/g,'""')+'"';
+  return [header, ...rows].map(r=>r.map(esc).join(",")).join("\r\n");
+}
+// A small share/export button bar for any popup. `key` identifies what to build.
+function shareBar(kind, id){
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:12px">
+    <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','whatsapp')">&#128241; WhatsApp / Share</button>
+    <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','copy')">&#128203; Copy text</button>
+    <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','csv')">&#128202; Excel/CSV</button>
+    <button class="btn btn-line btn-sm" style="flex:1" onclick="exportThing('${kind}','${id||""}','pdf')">&#128196; PDF</button>
+  </div>`;
+}
+// Central router: builds the right text/CSV/PDF for a given thing and shares/exports it.
+async function exportThing(kind, id, how){
+  const money=(n)=>"LKR "+Number(n||0).toLocaleString("en-LK");
+  const dt=(x)=>x?new Date(x).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}):"";
+  const fund=S.cfg.fund_name||"Baitul Maal 2013 O/L Batch";
+  let title="", text="", header=null, rows=[];
+
+  if(kind==="member"){
+    const pr=(S.people||[]).find(x=>x.id===id)||{};
+    title=(pr.name||"Member")+" — Profile";
+    const lines=[fund, "Member Profile", "", "Name: "+(pr.name||"—"),
+      "Mobile: "+(pr.mobile||"—"), "Role: "+(pr.role||"member"),
+      pr.committee_title?"Position: "+pr.committee_title:"",
+      "Occupation: "+(pr.occupation||"—"), "Hometown: "+(pr.hometown||"—"),
+      pr.bank_name?"Bank: "+pr.bank_name+" "+(pr.bank_account||""):""].filter(Boolean);
+    text=lines.join("\n");
+    header=["Field","Value"];
+    rows=[["Name",pr.name||""],["Mobile",pr.mobile||""],["Role",pr.role||"member"],
+      ["Position",pr.committee_title||""],["Occupation",pr.occupation||""],
+      ["Hometown",pr.hometown||""],["Bank",pr.bank_name||""],["Account",pr.bank_account||""]];
+  }
+  else if(kind==="committee"){
+    title=fund+" — Committee";
+    const held={}; (S.people||[]).forEach(p=>{ if(p.committee_title) held[p.committee_title]=p.name; });
+    const order=(typeof COMMITTEE!=="undefined")?COMMITTEE:Object.keys(held);
+    text=fund+"\nCommittee Members\n\n"+order.map(t=>t+": "+(held[t]||"— Vacant —")).join("\n");
+    header=["Position","Member"];
+    rows=order.map(t=>[t, held[t]||"Vacant"]);
+  }
+  else if(kind==="memberlist"){
+    title=fund+" — Members";
+    const ppl=(S.people||[]).filter(p=>p.status==="approved");
+    text=fund+"\nMembers ("+ppl.length+")\n\n"+ppl.map((p,i)=>(i+1)+". "+(p.name||"")+(p.committee_title?" ("+p.committee_title+")":"")).join("\n");
+    header=["#","Name","Mobile","Position","Role"];
+    rows=ppl.map((p,i)=>[i+1,p.name||"",p.mobile||"",p.committee_title||"",p.role||"member"]);
+  }
+  else { toast("Nothing to export."); return; }
+
+  if(how==="whatsapp"){ await shareText(text, title); return; }
+  if(how==="copy"){ await copyText(text); return; }
+  if(how==="csv"){ downloadFile(title.replace(/[^a-z0-9]+/gi,"_")+".csv", rowsToCSV(header,rows), "text/csv"); return; }
+  if(how==="pdf"){
+    const th=header.map(h=>`<th style="text-align:left;background:#f4f7f5;padding:6px 8px">${h}</th>`).join("");
+    const tr=rows.map(r=>"<tr>"+r.map(c=>`<td style="padding:6px 8px;border-bottom:1px solid #eee">${c}</td>`).join("")+"</tr>").join("");
+    const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
+      <style>body{font-family:-apple-system,sans-serif;padding:20px;color:#1a2420}h1{color:#0e5a44;font-size:20px}table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
+      .noprint{position:fixed;top:0;left:0;right:0;background:#1d7a5c;color:#fff;padding:10px;text-align:center}.noprint button{background:#fff;color:#1d7a5c;border:0;padding:6px 14px;border-radius:8px;font-weight:700}@media print{.noprint{display:none}body{padding:0}}</style></head>
+      <body><div class="noprint">Save as PDF → <button onclick="window.print()">Print / Save PDF</button></div>
+      <div style="padding-top:50px"><h1>${title}</h1><div style="color:#666;font-size:12px">${fund} · ${new Date().toLocaleString("en-GB")}</div>
+      <table><tr>${th}</tr>${tr}</table></div></body></html>`;
+    const w=window.open("","_blank"); if(!w){ toast("Allow pop-ups to open the PDF.", true); return; }
+    w.document.write(html); w.document.close();
+  }
+}
 function _period(){
   // Returns {label, from, to} based on the staff filter (sFilterMode) if set, else lifetime.
   const m = S.sFilterMode||"lifetime";
@@ -2504,7 +2599,7 @@ async function openCommittee(){
   openModal("Committee",
     `${own?'<p class="tiny">Pick a member for each position. Assigning someone frees the position from its previous holder automatically.</p>'+meRow:""}
      ${rows}
-     <p class="tiny sp" style="color:var(--muted)">Positions are organisational titles. App permissions (owner / treasurer / member) stay separate.</p>`);
+     <p class="tiny sp" style="color:var(--muted)">Positions are organisational titles. App permissions (owner / treasurer / member) stay separate.</p>${shareBar("committee")}`);
 }
 async function assignCommittee(uid, title){
   // Owner self-row calls assignCommittee(chosenTitle, "__self__")
@@ -4209,6 +4304,7 @@ Object.assign(window, {
   openFeatureControls, setFeat, openCallHistory, showAllMsgs, showActInfo, openFeedPost, loadFeedStrip,
   openSplitGroup, backToSplitHome, newGroupModal, createSplitGroup, delSplitGroup,
   openCommittee, assignCommittee, openFundInsights, exportCSV, buildReport,
+  shareText, copyText, downloadFile, exportThing, shareBar,
   inviteFriend, openApprovalsHistory, waSort, openMemberInfo,
   setPrimaryTreasurer, loadMemberOverrides, setMemberFeature, copyMemberBank
 });
@@ -4283,7 +4379,7 @@ async function refreshMember(){
   renderMemberHealth(); renderMyTables(); drawMemberCharts(); renderDepNotice(); loadRoster();
   loadLimits(); loadDonations(); renderMyActivity(); renderMyRejected(); fillMemberPicker(); toggleProxyKind();
   if($("mp-date") && !$("mp-date").value) $("mp-date").value=todayISO();
-  $("m-stamp").textContent = "Version 9.06 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
+  $("m-stamp").textContent = "Version 9.07 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
 }
 
 // Members can't read other people's rows, so the fund total can't be summed
@@ -6563,7 +6659,7 @@ async function openMemberInfo(uid){
     ${row("Joined", fmtD(pr.created_at))}
     ${row("Last active", fmtDT(act&&(act.last_login||act.last_seen)))}
     ${row("Times opened", act&&act.login_count!=null?String(act.login_count):null)}
-    ${(staff&&(pr.bank_account||pr.bank_name))?`<button class="btn btn-line btn-block sp" onclick="copyMemberBank('${pr.id}')">&#128203; Copy bank details</button>`:""}`);
+    ${(staff&&(pr.bank_account||pr.bank_name))?`<button class="btn btn-line btn-block sp" onclick="copyMemberBank('${pr.id}')">&#128203; Copy bank details</button>`:""}${staff?shareBar("member",pr.id):""}`);
 }
 async function loadActivity(){
   if(!isOwner()) return;
