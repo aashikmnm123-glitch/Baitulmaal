@@ -835,7 +835,7 @@ body.previewing.has-botnav #help-fab{bottom:calc(150px + env(safe-area-inset-bot
     <div class="stat"><p class="eyebrow">Approved / Rejected</p><p class="v num" id="mc-ar">—</p></div>
   </div>
 
-  <button class="btn btn-block sp" style="background:#0e5a44;color:#fff;margin-top:12px" onclick="buildReport('member')">&#128196; Print fund report (PDF with graphs)</button>
+  <button id="member-report-btn" class="btn btn-block sp hide" style="background:#0e5a44;color:#fff;margin-top:12px" onclick="buildReport('member')">&#128196; Print fund report (PDF with graphs)</button>
 
   <div class="card">
     <p class="eyebrow">Where to send money</p>
@@ -2148,6 +2148,7 @@ const FEATS=[
   ["feat_market","Marketplace","Buy & sell listings"],
   ["feat_feed","Feed","Batch posts and likes"],
   ["feat_splits","Splits","Shared-expense tracking"],
+  ["feat_export","Print & Export","Let this member print/share PDF, Excel, WhatsApp"],
 ];
 function featRaw(k){
   const ov=S.me?.feat_overrides?.[k];
@@ -2161,6 +2162,8 @@ function featRaw(k){
   return true;
 }
 function featOn(k){ return isOwner() || featRaw(k); }
+// Can the CURRENT user use print/export/share? Staff always; members need feat_export ON.
+function canExport(){ return isStaff() || featRaw("feat_export"); }
 function showBotNav(on){
   const n=$("botnav"); if(!n) return;
   n.classList.toggle("nav-hidden", !on);
@@ -2354,9 +2357,38 @@ function _period(){
   return {label:"Lifetime (all records)", test:()=>true};
 }
 
+// Render a real x/y line chart (money In / Out / Gifts over time) to a PNG data-URL.
+async function chartToImage(){
+  return new Promise((resolve)=>{
+    if(typeof Chart==="undefined"){ resolve(null); return; }
+    // Aggregate by month
+    const keyOf=(d)=>{ const x=new Date(d); return x.getFullYear()+"-"+String(x.getMonth()+1).padStart(2,"0"); };
+    const inM={},outM={},wwM={};
+    (S.deposits||[]).filter(d=>d.status==="verified"&&d.date).forEach(d=>{const k=keyOf(d.date+"T00:00:00");inM[k]=(inM[k]||0)+Number(d.amount||0);});
+    (S.requests||[]).filter(r=>r.disbursed&&r.disbursed_at).forEach(r=>{const k=keyOf(r.disbursed_at);outM[k]=(outM[k]||0)+Number(r.approved_amount??r.amount);});
+    (S.donations||[]).filter(d=>d.status!=="pending"&&d.status!=="rejected"&&d.date).forEach(d=>{const k=keyOf(d.date+"T00:00:00");wwM[k]=(wwM[k]||0)+Number(d.amount||0);});
+    const labels=[...new Set([...Object.keys(inM),...Object.keys(outM),...Object.keys(wwM)])].sort();
+    if(!labels.length){ resolve(null); return; }
+    const cv=document.createElement("canvas"); cv.width=760; cv.height=380;
+    const ch=new Chart(cv.getContext("2d"),{
+      type:"line",
+      data:{ labels, datasets:[
+        {label:"Money In (deposits)", data:labels.map(k=>inM[k]||0), borderColor:"#1d7a5c", backgroundColor:"rgba(29,122,92,.12)", fill:true, tension:.3},
+        {label:"Money Out (payouts)", data:labels.map(k=>outM[k]||0), borderColor:"#c0392b", backgroundColor:"rgba(192,57,43,.10)", fill:true, tension:.3},
+        {label:"Well-wisher Gifts", data:labels.map(k=>wwM[k]||0), borderColor:"#b8860b", backgroundColor:"rgba(184,134,11,.10)", fill:true, tension:.3},
+      ]},
+      options:{ responsive:false, animation:false,
+        plugins:{ legend:{position:"bottom"}, title:{display:true,text:"Fund Activity Over Time (LKR)"} },
+        scales:{ y:{ beginAtZero:true, title:{display:true,text:"LKR"} }, x:{ title:{display:true,text:"Month"} } } }
+    });
+    // Give Chart a tick to render, then grab the image
+    setTimeout(()=>{ try{ const img=cv.toDataURL("image/png"); ch.destroy(); resolve(img); }catch(_){ resolve(null); } }, 250);
+  });
+}
 // Build a printable financial report. audience = "committee" (full) or "member" (summary).
-function buildReport(audience){
+async function buildReport(audience){
   const F=computeFin();
+  const chartImg=await chartToImage();
   const per=_period();
   const money=(n)=>"LKR "+Number(n||0).toLocaleString("en-LK");
   const dt=(x)=>x? new Date(x).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}):"";
@@ -2437,7 +2469,10 @@ function buildReport(audience){
       <div class="card"><div class="l">Loans Outstanding</div><div class="v red">${money(F.receivable)}</div></div>
     </div>
 
-    <h2>Income vs Outflow</h2>
+    <h2>Fund Activity Graph</h2>
+    ${chartImg?`<img src="${chartImg}" style="width:100%;max-width:720px;border:1px solid #eee;border-radius:10px">`:'<p style="color:#888;font-size:12px">Not enough dated records yet to draw the time graph.</p>'}
+
+    <h2>Income vs Outflow (this period)</h2>
     ${bar("Total Money In",totalIn,maxFlow,"#1d7a5c")}
     ${bar("Total Money Out",totalOut,maxFlow,"#c0392b")}
 
@@ -4379,7 +4414,7 @@ async function refreshMember(){
   renderMemberHealth(); renderMyTables(); drawMemberCharts(); renderDepNotice(); loadRoster();
   loadLimits(); loadDonations(); renderMyActivity(); renderMyRejected(); fillMemberPicker(); toggleProxyKind();
   if($("mp-date") && !$("mp-date").value) $("mp-date").value=todayISO();
-  $("m-stamp").textContent = "Version 9.07 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
+  $("m-stamp").textContent = "Version 9.08 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
 }
 
 // Members can't read other people's rows, so the fund total can't be summed
@@ -4597,6 +4632,7 @@ async function renderMemberHealth(){
   if($("mc-req")) $("mc-req").textContent = String(reqsF.length);
   if($("mc-ar"))  $("mc-ar").textContent  = reqsF.filter(r=>r.disbursed||r.status==="approved").length+" / "+reqsF.filter(r=>r.status==="rejected").length;
   // Show which period is in view, so the numbers are unambiguous.
+  { const rb=$("member-report-btn"); if(rb) rb.classList.toggle("hide", !canExport()); }
   if($("mc-period")){
     const lbl={lifetime:"Lifetime",yearly:"This year",monthly:"This month",custom:"Custom range"}[S.filterMode||"lifetime"];
     $("mc-period").textContent = lbl||"Lifetime";
@@ -6659,7 +6695,7 @@ async function openMemberInfo(uid){
     ${row("Joined", fmtD(pr.created_at))}
     ${row("Last active", fmtDT(act&&(act.last_login||act.last_seen)))}
     ${row("Times opened", act&&act.login_count!=null?String(act.login_count):null)}
-    ${(staff&&(pr.bank_account||pr.bank_name))?`<button class="btn btn-line btn-block sp" onclick="copyMemberBank('${pr.id}')">&#128203; Copy bank details</button>`:""}${staff?shareBar("member",pr.id):""}`);
+    ${(staff&&(pr.bank_account||pr.bank_name))?`<button class="btn btn-line btn-block sp" onclick="copyMemberBank('${pr.id}')">&#128203; Copy bank details</button>`:""}${(staff&&canExport())?shareBar("member",pr.id):""}`);
 }
 async function loadActivity(){
   if(!isOwner()) return;
