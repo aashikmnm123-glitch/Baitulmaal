@@ -835,6 +835,8 @@ body.previewing.has-botnav #help-fab{bottom:calc(150px + env(safe-area-inset-bot
     <div class="stat"><p class="eyebrow">Approved / Rejected</p><p class="v num" id="mc-ar">—</p></div>
   </div>
 
+  <button class="btn btn-block sp" style="background:#0e5a44;color:#fff;margin-top:12px" onclick="buildReport('member')">&#128196; Print fund report (PDF with graphs)</button>
+
   <div class="card">
     <p class="eyebrow">Where to send money</p>
     <p id="m-bank" class="sp" style="white-space:pre-line;font-size:14.5px">—</p>
@@ -2247,6 +2249,128 @@ function applyGlobalFeatureGates(){
 function _fiDate(x){ return new Date(x.date||x.created_at||x.approved_at||Date.now()); }
 function _fiOk(d){ return d.status==="verified"; }
 function _fiDon(d){ return d.status!=="pending" && d.status!=="rejected"; }
+function _period(){
+  // Returns {label, from, to} based on the staff filter (sFilterMode) if set, else lifetime.
+  const m = S.sFilterMode||"lifetime";
+  const now=new Date();
+  if(m==="monthly") return {label:"This Month ("+now.toLocaleDateString("en-GB",{month:"long",year:"numeric"})+")", test:(d)=>{const x=new Date(d);return x.getMonth()===now.getMonth()&&x.getFullYear()===now.getFullYear();}};
+  if(m==="yearly") return {label:"This Year ("+now.getFullYear()+")", test:(d)=>new Date(d).getFullYear()===now.getFullYear()};
+  if(m==="custom" && S.sFilterFrom && S.sFilterTo) return {label:"Custom: "+S.sFilterFrom+" to "+S.sFilterTo, test:(d)=>{const x=(""+d).slice(0,10);return x>=S.sFilterFrom&&x<=S.sFilterTo;}};
+  return {label:"Lifetime (all records)", test:()=>true};
+}
+
+// Build a printable financial report. audience = "committee" (full) or "member" (summary).
+function buildReport(audience){
+  const F=computeFin();
+  const per=_period();
+  const money=(n)=>"LKR "+Number(n||0).toLocaleString("en-LK");
+  const dt=(x)=>x? new Date(x).toLocaleDateString("en-GB",{day:"2-digit",month:"short",year:"numeric"}):"";
+  const now=new Date().toLocaleString("en-GB",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"});
+  const fund=S.cfg.fund_name||"Baitul Maal 2013 O/L Batch";
+
+  // Filtered records for the selected period
+  const deps=(S.deposits||[]).filter(d=>d.status==="verified"&&per.test(d.date||d.created_at));
+  const dons=(S.donations||[]).filter(d=>d.status!=="rejected"&&d.status!=="pending"&&per.test(d.date||d.created_at));
+  const outs=(S.requests||[]).filter(r=>r.disbursed&&per.test(r.disbursed_at||r.date||r.created_at));
+  const reps=(S.repayments||[]).filter(r=>per.test(r.date||r.created_at));
+  const sum=(a,f)=>a.reduce((x,y)=>x+Number((f?f(y):y.amount)||0),0);
+
+  const cashIn=sum(deps), giftsIn=sum(dons), repaidIn=sum(reps);
+  const loansOut=sum(outs.filter(r=>r.intent==="loan"),r=>r.approved_amount??r.amount);
+  const grantsOut=sum(outs.filter(r=>r.intent!=="loan"),r=>r.approved_amount??r.amount);
+  const totalIn=cashIn+giftsIn+repaidIn, totalOut=loansOut+grantsOut;
+
+  // Simple inline bar chart (SVG) — income vs outflow + boys/girls
+  const bar=(label,val,max,color)=>{
+    const w=max>0?Math.round((val/max)*100):0;
+    return `<div style="margin:6px 0"><div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px"><span>${label}</span><b>${money(val)}</b></div>
+      <div style="background:#eee;border-radius:6px;height:14px;overflow:hidden"><div style="width:${w}%;height:100%;background:${color}"></div></div></div>`;
+  };
+  const maxFlow=Math.max(totalIn,totalOut,1);
+  const maxSide=Math.max(F.boysIn,F.girlsIn,F.boysT,F.girlsT,1);
+
+  const memberRows = audience==="committee"
+    ? deps.slice().sort((a,b)=>(b.amount||0)-(a.amount||0)).map(d=>`<tr><td>${d.name||""}</td><td style="text-align:right">${money(d.amount)}</td><td>${dt(d.date||d.created_at)}</td></tr>`).join("")
+    : "";
+  const outRows = audience==="committee"
+    ? outs.map(r=>`<tr><td>${r.name||""}</td><td>${r.intent==="loan"?"Loan":"Help/Charity"}</td><td style="text-align:right">${money(r.approved_amount??r.amount)}</td><td>${dt(r.disbursed_at||r.date)}</td></tr>`).join("")
+    : "";
+  const donRows = dons.map(d=>`<tr><td>${d.name||d.donor||"Well-wisher"}</td><td style="text-align:right">${money(d.amount)}</td><td>${dt(d.date||d.created_at)}</td></tr>`).join("");
+
+  const html=`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>${fund} — Financial Report</title>
+  <style>
+    *{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    body{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#1a2420;margin:0;padding:24px;line-height:1.5}
+    h1{font-size:22px;margin:0 0 2px} h2{font-size:15px;color:#1d7a5c;border-bottom:2px solid #1d7a5c;padding-bottom:4px;margin:22px 0 10px}
+    .sub{color:#666;font-size:12px;margin-bottom:16px}
+    .hero{background:linear-gradient(135deg,#0e5a44,#1d7a5c);color:#fff;border-radius:14px;padding:18px;margin-bottom:8px}
+    .hero .bal{font-size:30px;font-weight:800;letter-spacing:-.5px}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0}
+    .card{border:1px solid #e5e5e5;border-radius:10px;padding:12px}
+    .card .l{font-size:11px;color:#777;text-transform:uppercase;letter-spacing:.05em}
+    .card .v{font-size:18px;font-weight:700;margin-top:2px}
+    table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+    th{text-align:left;background:#f4f7f5;padding:6px 8px;font-size:11px;text-transform:uppercase;color:#555}
+    td{padding:6px 8px;border-bottom:1px solid #eee}
+    .foot{margin-top:28px;padding-top:12px;border-top:1px solid #ddd;color:#888;font-size:11px;text-align:center}
+    .green{color:#1d7a5c} .red{color:#c0392b}
+    @media print{body{padding:0}.noprint{display:none}}
+    .noprint{position:fixed;top:0;left:0;right:0;background:#1d7a5c;color:#fff;padding:12px;text-align:center;font-weight:700;z-index:9}
+    .noprint button{background:#fff;color:#1d7a5c;border:0;padding:8px 16px;border-radius:8px;font-weight:700;margin-left:8px}
+    .rep-body{margin-top:0}
+  </style></head><body>
+  <div class="noprint">To save as PDF: tap Share → Print → then Share the PDF.
+    <button onclick="window.print()">Print / Save PDF</button></div>
+  <div class="rep-body" style="padding-top:56px">
+    <h1>${fund}</h1>
+    <div class="sub">Financial Report &nbsp;·&nbsp; ${per.label} &nbsp;·&nbsp; Generated ${now}${audience==="member"?" · Member Summary":" · Committee — Full Detail"}</div>
+
+    <div class="hero">
+      <div style="font-size:12px;opacity:.85;text-transform:uppercase;letter-spacing:.08em">Current Fund Balance</div>
+      <div class="bal">${money(F.balance)}</div>
+      <div style="font-size:12px;opacity:.9;margin-top:4px">Target ${money(F.target)} &nbsp;·&nbsp; ${F.target>0?Math.round((F.balance/F.target)*100):0}% reached${F.deficit>0?` &nbsp;·&nbsp; Deficit ${money(F.deficit)}`:""}</div>
+    </div>
+
+    <h2>Summary (${per.label})</h2>
+    <div class="grid">
+      <div class="card"><div class="l">Money In (deposits)</div><div class="v green">${money(cashIn)}</div></div>
+      <div class="card"><div class="l">Well-wisher Gifts</div><div class="v green">${money(giftsIn)}</div></div>
+      <div class="card"><div class="l">Loans Given</div><div class="v">${money(loansOut)}</div></div>
+      <div class="card"><div class="l">Help / Charity Given</div><div class="v">${money(grantsOut)}</div></div>
+      <div class="card"><div class="l">Loan Repayments In</div><div class="v green">${money(repaidIn)}</div></div>
+      <div class="card"><div class="l">Loans Outstanding</div><div class="v red">${money(F.receivable)}</div></div>
+    </div>
+
+    <h2>Income vs Outflow</h2>
+    ${bar("Total Money In",totalIn,maxFlow,"#1d7a5c")}
+    ${bar("Total Money Out",totalOut,maxFlow,"#c0392b")}
+
+    <h2>Boys vs Girls Collection (lifetime)</h2>
+    ${bar("Boys — collected of "+money(F.boysT),F.boysIn,maxSide,"#2e86c1")}
+    ${bar("Girls — collected of "+money(F.girlsT),F.girlsIn,maxSide,"#a569bd")}
+
+    ${donRows?`<h2>Well-wisher Donations</h2><table><tr><th>Donor</th><th style="text-align:right">Amount</th><th>Date</th></tr>${donRows}</table>`:""}
+
+    ${audience==="committee"&&memberRows?`<h2>Verified Deposits (${deps.length})</h2><table><tr><th>Member</th><th style="text-align:right">Amount</th><th>Date</th></tr>${memberRows}</table>`:""}
+
+    ${audience==="committee"&&outRows?`<h2>Payouts — Loans & Help (${outs.length})</h2><table><tr><th>Member</th><th>Type</th><th style="text-align:right">Amount</th><th>Date</th></tr>${outRows}</table>`:""}
+
+    <h2>What these numbers mean</h2>
+    <div style="font-size:12px;color:#444">
+      <b>Fund Balance</b> = all verified deposits + confirmed gifts + loan repayments − money paid out.<br>
+      <b>Loans Outstanding</b> = money lent that has not yet been repaid.<br>
+      <b>Deficit</b> = how far the balance is below the target reserve.<br>
+      Splits and marketplace never touch this fund — only the figures above do.
+    </div>
+
+    <div class="foot">${fund} · Report generated ${now}<br>Figures are ${audience==="member"?"a member summary":"the full committee record"}. For questions contact the fund owner or treasurer.</div>
+  </div></body></html>`;
+
+  const w=window.open("","_blank");
+  if(!w){ toast("Please allow pop-ups to open the report.", true); return; }
+  w.document.write(html); w.document.close();
+}
 function _csvCell(v){ v=String(v==null?"":v); return '"'+v.replace(/"/g,'""')+'"'; }
 function _dl(name,text){
   const a=document.createElement("a");
@@ -2348,7 +2472,8 @@ async function openFundInsights(){
       <button class="btn btn-line btn-sm" onclick="exportCSV('repayments')">Repayments</button>
       <button class="btn btn-line btn-sm" onclick="exportCSV('donations')">Donations</button>
     </div>
-    <button class="btn btn-primary btn-block sp" onclick="exportCSV('all')">Download FULL ledger</button>
+    <button class="btn btn-block sp" style="background:#0e5a44;color:#fff" onclick="buildReport('committee')">&#128196; Print full PDF report (with graphs)</button>
+    <button class="btn btn-primary btn-block sp" onclick="exportCSV('all')">Download FULL ledger (Excel/CSV)</button>
     <button class="btn btn-line btn-block" onclick="openApprovalsHistory()">&#128203; Approvals history</button>`);
 }
 const COMMITTEE=["President","Vice President","Secretary","Vice Secretary","Treasurer",
@@ -4083,7 +4208,7 @@ Object.assign(window, {
   togglePin, setGroupIcon, setChatPin, clearChatPin,
   openFeatureControls, setFeat, openCallHistory, showAllMsgs, showActInfo, openFeedPost, loadFeedStrip,
   openSplitGroup, backToSplitHome, newGroupModal, createSplitGroup, delSplitGroup,
-  openCommittee, assignCommittee, openFundInsights, exportCSV,
+  openCommittee, assignCommittee, openFundInsights, exportCSV, buildReport,
   inviteFriend, openApprovalsHistory, waSort, openMemberInfo,
   setPrimaryTreasurer, loadMemberOverrides, setMemberFeature, copyMemberBank
 });
@@ -4158,7 +4283,7 @@ async function refreshMember(){
   renderMemberHealth(); renderMyTables(); drawMemberCharts(); renderDepNotice(); loadRoster();
   loadLimits(); loadDonations(); renderMyActivity(); renderMyRejected(); fillMemberPicker(); toggleProxyKind();
   if($("mp-date") && !$("mp-date").value) $("mp-date").value=todayISO();
-  $("m-stamp").textContent = "Version 9.05 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
+  $("m-stamp").textContent = "Version 9.06 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
 }
 
 // Members can't read other people's rows, so the fund total can't be summed
