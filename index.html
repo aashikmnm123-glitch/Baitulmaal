@@ -2148,7 +2148,6 @@ const FEATS=[
   ["feat_market","Marketplace","Buy & sell listings"],
   ["feat_feed","Feed","Batch posts and likes"],
   ["feat_splits","Splits","Shared-expense tracking"],
-  ["feat_export","Print & Export","Let this member print/share PDF, Excel, WhatsApp"],
 ];
 function featRaw(k){
   const ov=S.me?.feat_overrides?.[k];
@@ -2163,7 +2162,12 @@ function featRaw(k){
 }
 function featOn(k){ return isOwner() || featRaw(k); }
 // Can the CURRENT user use print/export/share? Staff always; members need feat_export ON.
-function canExport(){ return isStaff() || featRaw("feat_export"); }
+function canExport(){
+  // Owner & treasurer always. Committee members (those holding a committee
+  // title) can print/share. Regular members cannot.
+  if(isStaff()) return true;
+  return !!(S.me && S.me.committee_title);
+}
 function showBotNav(on){
   const n=$("botnav"); if(!n) return;
   n.classList.toggle("nav-hidden", !on);
@@ -2370,6 +2374,9 @@ async function chartToImage(){
     const labels=[...new Set([...Object.keys(inM),...Object.keys(outM),...Object.keys(wwM)])].sort();
     if(!labels.length){ resolve(null); return; }
     const cv=document.createElement("canvas"); cv.width=760; cv.height=380;
+    // Attach offscreen so Chart.js actually paints before we capture it.
+    cv.style.cssText="position:fixed;left:-9999px;top:0;width:760px;height:380px";
+    document.body.appendChild(cv);
     const ch=new Chart(cv.getContext("2d"),{
       type:"line",
       data:{ labels, datasets:[
@@ -2382,7 +2389,7 @@ async function chartToImage(){
         scales:{ y:{ beginAtZero:true, title:{display:true,text:"LKR"} }, x:{ title:{display:true,text:"Month"} } } }
     });
     // Give Chart a tick to render, then grab the image
-    setTimeout(()=>{ try{ const img=cv.toDataURL("image/png"); ch.destroy(); resolve(img); }catch(_){ resolve(null); } }, 250);
+    setTimeout(()=>{ try{ const img=cv.toDataURL("image/png"); ch.destroy(); cv.remove(); resolve(img); }catch(_){ try{cv.remove();}catch(e){} resolve(null); } }, 600);
   });
 }
 // Build a printable financial report. audience = "committee" (full) or "member" (summary).
@@ -4414,7 +4421,7 @@ async function refreshMember(){
   renderMemberHealth(); renderMyTables(); drawMemberCharts(); renderDepNotice(); loadRoster();
   loadLimits(); loadDonations(); renderMyActivity(); renderMyRejected(); fillMemberPicker(); toggleProxyKind();
   if($("mp-date") && !$("mp-date").value) $("mp-date").value=todayISO();
-  $("m-stamp").textContent = "Version 9.08 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
+  $("m-stamp").textContent = "Version 9.09 · updated " + new Date().toLocaleTimeString("en-GB",{hour:"2-digit",minute:"2-digit"})
 }
 
 // Members can't read other people's rows, so the fund total can't be summed
